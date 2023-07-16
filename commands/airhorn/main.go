@@ -2,6 +2,8 @@ package airhorn
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -12,7 +14,7 @@ import (
 )
 
 var airhornBuffer = make([][]byte, 0)
-var connections = make(map[string]discordgo.Channel)
+var connections = make(map[string]string)
 
 func LoadSound() (err error) {
 	file, err := os.Open("airhorn.dca")
@@ -51,7 +53,7 @@ var Data = &disgolf.Command{
 	Name:        "airhorn",
 	Description: "Plays airhorn sound in your voice channel",
 	Handler: disgolf.HandlerFunc(func(ctx *disgolf.Ctx) {
-		guild, err := ctx.Guild(ctx.Interaction.GuildID)
+		guild, err := ctx.State.Guild(ctx.Interaction.GuildID)
 		if err != nil {
 			ctx.Respond(&discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -65,45 +67,44 @@ var Data = &disgolf.Command{
 		voiceState, err := ctx.State.VoiceState(guild.ID, ctx.Interaction.Member.User.ID)
 
 		if err != nil {
+			if errors.Is(err, discordgo.ErrStateNotFound) {
+				ctx.Respond(&discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "You have to join in some voice channel",
+					},
+				})
+			} else {
+				log.Println(err)
+				ctx.Respond(&discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "An error has occured while searching for your channel",
+					},
+				})
+			}
+			return
+		}
+
+		channelMention := fmt.Sprintf("<#%s>", voiceState.ChannelID)
+
+		if _, alreadyConnected := connections[voiceState.ChannelID]; alreadyConnected {
 			ctx.Respond(&discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
-					Content: "You have to join in some voice channel",
+					Content: fmt.Sprintf("I'm already playing in %s", channelMention),
 				},
 			})
 			return
 		}
 
-		channel, err := ctx.Channel(voiceState.ChannelID)
-		if err != nil {
-			log.Print(err)
-			ctx.Respond(&discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "An error has occured while searching for your channel",
-				},
-			})
-			return
-		}
-
-		_, alreadyConnected := connections[channel.ID]
-		if alreadyConnected {
-			ctx.Respond(&discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "I'm already playing in your channel",
-				},
-			})
-			return
-		}
-
-		connections[channel.ID] = *channel
-		defer delete(connections, channel.ID)
+		connections[voiceState.ChannelID] = voiceState.ChannelID
+		defer delete(connections, voiceState.ChannelID)
 
 		ctx.Respond(&discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "Joining...",
+				Content: fmt.Sprintf("Playing airhorn in %s", channelMention),
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -111,7 +112,7 @@ var Data = &disgolf.Command{
 		vc, err := ctx.ChannelVoiceJoin(voiceState.GuildID, voiceState.ChannelID, false, true)
 		if err != nil {
 			log.Print(err)
-			content := "An error has occured while joining in your voice channel"
+			content := fmt.Sprintf("An error has occured while joining in %s", channelMention)
 			ctx.InteractionResponseEdit(ctx.Interaction, &discordgo.WebhookEdit{Content: &content})
 			return
 		}
@@ -119,6 +120,7 @@ var Data = &disgolf.Command{
 		time.Sleep(250 * time.Millisecond)
 
 		vc.Speaking(true)
+
 		for _, buff := range airhornBuffer {
 			vc.OpusSend <- buff
 		}
@@ -126,8 +128,5 @@ var Data = &disgolf.Command{
 		vc.Speaking(false)
 		time.Sleep(250 * time.Millisecond)
 		vc.Disconnect()
-
-		content := "Played Airhorn in your voice channel"
-		ctx.InteractionResponseEdit(ctx.Interaction, &discordgo.WebhookEdit{Content: &content})
 	}),
 }
